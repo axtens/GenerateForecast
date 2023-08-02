@@ -108,16 +108,16 @@ namespace GenerateForecast
                 case "manualcpcbiddingstrategy":
                     var mcbs = new ManualCpcBiddingStrategy
                     {
-                        MaxCpcBidMicros = a,
-                        DailyBudgetMicros = b
+                        MaxCpcBidMicros = b,
+                        DailyBudgetMicros = a
                     };
                     cbs.ManualCpcBiddingStrategy = mcbs;
                     break;
                 case "maximizeclicksbiddingstrategy":
                     var xcbs = new MaximizeClicksBiddingStrategy
                     {
-                        MaxCpcBidCeilingMicros = a,
-                        DailyTargetSpendMicros = b
+                        MaxCpcBidCeilingMicros = b,
+                        DailyTargetSpendMicros = a
                     };
                     cbs.MaximizeClicksBiddingStrategy = xcbs;
                     break;
@@ -146,6 +146,12 @@ namespace GenerateForecast
         public CampaignToForecastClass AddForecastAdGroup(ForecastAdGroup forecastAdGroup)
         {
             AdGroups.Add(forecastAdGroup);
+            return this;
+        }
+
+        public CampaignToForecastClass SetConversionRate(double rate)
+        {
+            ConversionRate = rate;
             return this;
         }
 

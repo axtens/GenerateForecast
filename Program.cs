@@ -2,7 +2,10 @@
 using Google.Ads.GoogleAds.Config;
 using Google.Ads.GoogleAds.Lib;
 using Google.Ads.GoogleAds.Util;
+using Google.Ads.GoogleAds.V12.Enums;
+using Google.Ads.GoogleAds.V12.Resources;
 using Google.Ads.GoogleAds.V14.Common;
+using Google.Ads.GoogleAds.V14.Errors;
 using Google.Ads.GoogleAds.V14.Services;
 using Google.Apis.Auth.OAuth2;
 using Google.Apis.Util.Store;
@@ -10,10 +13,12 @@ using Google.Apis.Util.Store;
 using Newtonsoft.Json;
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Linq;
 
 using GoogleAdsException = Google.Ads.GoogleAds.V14.Errors.GoogleAdsException;
 using KeywordPlanIdeaServiceClient = Google.Ads.GoogleAds.V14.Services.KeywordPlanIdeaServiceClient;
@@ -28,7 +33,7 @@ namespace GenerateForecast
         {
             if (args.Length < 2)
             {
-                Console.WriteLine("Requires settings.json and a credentials json");
+                Console.WriteLine("Requires settings.json and a credentials json and optional ccid");
                 return 1;
             }
             var settingsJson = args[0];
@@ -52,19 +57,113 @@ namespace GenerateForecast
                 return 1;
             }
 
+            settings.CcId = args.Length > 2 ? args[2].Replace("-", "") : settings.CcId.Replace("-", "");
+
             (GoogleAdsClient client, UserCredential _) = Authorise(credentialsJson, settings);
             var (ok, body) = Forecast(client, settings);
             if (ok == null)
             {
-                Console.WriteLine(JsonConvert.SerializeObject(body));
+                var geos = GetGeoTargetConstants(client, settings).response;
+                var res = new Result
+                {
+                    Locations = new Dictionary<long, string>()
+                };
+                foreach (var detail in CampaignDetails(client, settings).response)
+                {
+                    if (detail.HasNegative && !detail.Negative)
+                    {
+                        var resId = long.Parse(detail.ResourceName.Split('~')[1]);
+                        var g = (from geo in geos where geo.Id == resId select geo).FirstOrDefault();
+                        res.Locations[resId] = g?.CanonicalName;
+                    }
+                }
+                res.KeywordForecastMetrics = body;
+                Console.WriteLine(JsonConvert.SerializeObject(res, Formatting.Indented));
                 return 0;
             }
             else
             {
-                Console.WriteLine(JsonConvert.SerializeObject(ok.Failure));
+                Console.WriteLine(JsonConvert.SerializeObject(ok.Failure, Formatting.Indented));
                 return 1;
             }
         }
+
+        private static (GoogleAdsFailure exception, List<Google.Ads.GoogleAds.V14.Resources.CampaignCriterion> response) CampaignDetails(GoogleAdsClient client, Settings settings)
+        {
+            // Get the GoogleAdsService.
+            GoogleAdsServiceClient googleAdsService = client.GetService(
+                Services.V14.GoogleAdsService);
+
+            // Create a query that will retrieve all campaigns.
+            string query = File.ReadAllText(@"C:\Temp\GenerateForecast.gaql");
+
+            try
+            {
+                // Issue a search request.
+                var rows = new List<Google.Ads.GoogleAds.V14.Resources.CampaignCriterion>();
+                googleAdsService.SearchStream(settings.CcId, query,
+                    (SearchGoogleAdsStreamResponse resp) =>
+                    {
+                        foreach (GoogleAdsRow googleAdsRow in resp.Results)
+                        {
+                            //Console.WriteLine("Campaign with ID {0} and name '{1}' was found.",
+                            //    googleAdsRow.Campaign.Id, googleAdsRow.Campaign.Name);
+                            rows.Add(googleAdsRow.CampaignCriterion);
+                        }
+                    }
+                );
+                return (null, rows);
+            }
+            catch (GoogleAdsException e)
+            {
+                return (e.Failure, null);
+            }
+        }
+
+        private static (GoogleAdsFailure exception, List<Google.Ads.GoogleAds.V14.Resources.GeoTargetConstant> response) GetGeoTargetConstants(GoogleAdsClient client, Settings settings)
+        {
+            // Get the GoogleAdsService.
+            GoogleAdsServiceClient googleAdsService = client.GetService(
+                Services.V14.GoogleAdsService);
+
+            // Create a query that will retrieve all campaigns.
+            const string query = @"
+SELECT 
+  geo_target_constant.id,
+  geo_target_constant.name,
+  geo_target_constant.status,
+  geo_target_constant.resource_name,
+  geo_target_constant.parent_geo_target,
+  geo_target_constant.target_type,
+  geo_target_constant.country_code,
+  geo_target_constant.canonical_name FROM geo_target_constant 
+WHERE 
+  geo_target_constant.status = 'ENABLED' 
+";
+
+            try
+            {
+                // Issue a search request.
+                var rows = new List<Google.Ads.GoogleAds.V14.Resources.GeoTargetConstant>();
+                googleAdsService.SearchStream(settings.CcId, query,
+                    (SearchGoogleAdsStreamResponse resp) =>
+                    {
+                        foreach (GoogleAdsRow googleAdsRow in resp.Results)
+                        {
+                            //Console.WriteLine("Campaign with ID {0} and name '{1}' was found.",
+                            //    googleAdsRow.Campaign.Id, googleAdsRow.Campaign.Name);
+                            rows.Add(googleAdsRow.GeoTargetConstant);
+                        }
+                    }
+                );
+                return (null, rows);
+            }
+            catch (GoogleAdsException e)
+            {
+                return (e.Failure, null);
+            }
+        }
+        private static long DoubleToMicros(double value) => (long)(value * 1_000_000);
 
         private static (GoogleAdsException err, KeywordForecastMetrics body) Forecast(GoogleAdsClient authorisation, Settings settings)
         {
@@ -72,10 +171,21 @@ namespace GenerateForecast
             ctfc.AddLanguageConstant(settings.Language);
             ctfc.AddGeoModifier(ctfc.CreateCriterionBidModifier(settings.Location));
             ctfc.KeywordPlanNetwork = (Google.Ads.GoogleAds.V14.Enums.KeywordPlanNetworkEnum.Types.KeywordPlanNetwork)ctfc.CreateKeywordPlanNetwork(settings.Network);
-            ctfc.BiddingStrategy = ctfc.CreateCampaignBiddingStrategy("ManualCpcBiddingStrategy", 500 * 1_000_000, 100_000L * 1_000_000);
-            ctfc.AddBiddableKeyword(ctfc.CreateBiddableKeyword("Exact", settings.Keywords, 100_000L * 1_000_000));
+            ctfc.BiddingStrategy = ctfc.CreateCampaignBiddingStrategy(
+                "ManualCpcBiddingStrategy",
+                DoubleToMicros(settings.BiddingStrategyDailyBudgetDollars),
+                DoubleToMicros(settings.BiddingStrategyMaxCpcBidDollars));
+            ctfc.AddBiddableKeyword(ctfc.CreateBiddableKeyword(
+                settings.BiddableKeywordsMatchType,
+                settings.BiddableKeywords,
+                DoubleToMicros(settings.BiddableKeywordsMaxCpcBidDollars)));
             //ctfc.AddNegativeKeyword(ctfc.CreateKeywordInfo("Broad", "nothing"));
-            ctfc.AddForecastAdGroup(ctfc.CreateForecastAdGroup(ctfc.BiddableKeywords, ctfc.NegativeKeywords, 10_000L * 1_000_000));
+            ctfc.AddForecastAdGroup(
+                ctfc.CreateForecastAdGroup(
+                    ctfc.BiddableKeywords,
+                    ctfc.NegativeKeywords,
+                    DoubleToMicros(settings.AdGroupsMaxCpcBidDollar)));
+            ctfc.SetConversionRate(settings.ConversionRate);
             var generated = ctfc.Generate();
             var result = GenerateKeywordForecast(authorisation, settings.CcId, CreateDataRange(settings.From, settings.To), generated);
             return (result.exception, result.generated);
@@ -115,7 +225,7 @@ namespace GenerateForecast
             {
                 OAuth2RefreshToken = credential.Token.RefreshToken,
                 DeveloperToken = devToken,
-                LoginCustomerId = settings.LoginCustomerId.Replace("-",""),
+                LoginCustomerId = settings.LoginCustomerId.Replace("-", ""),
                 OAuth2ClientId = clientId,
                 OAuth2ClientSecret = clientSecret
             });
@@ -133,7 +243,7 @@ namespace GenerateForecast
             return dateRange;
         }
 
-        public static (Google.Ads.GoogleAds.V14.Errors.GoogleAdsException exception, KeywordForecastMetrics generated) GenerateKeywordForecast(GoogleAdsClient client, string ccid, DateRange dateRange, CampaignToForecast ctfc, bool debug = false)
+        public static (GoogleAdsException exception, KeywordForecastMetrics generated) GenerateKeywordForecast(GoogleAdsClient client, string ccid, DateRange dateRange, CampaignToForecast ctfc, bool debug = false)
         {
             if (debug) Debugger.Launch();
 
@@ -144,16 +254,13 @@ namespace GenerateForecast
             {
                 Campaign = ctfc,
                 ForecastPeriod = dateRange,
-                CustomerId = ccid.Replace("-","")
+                CustomerId = ccid.Replace("-", "")
             };
 
             try
             {
                 // Generate keyword ideas based on the specified parameters.
-                var response =
-                    keywordPlanIdeaService.GenerateKeywordForecastMetrics(req);
-
-                GenerateKeywordForecastMetricsResponse generateKeywordIdeaResults = response;
+                GenerateKeywordForecastMetricsResponse generateKeywordIdeaResults = keywordPlanIdeaService.GenerateKeywordForecastMetrics(req);
                 return (null, generateKeywordIdeaResults.CampaignForecastMetrics);
             }
             catch (GoogleAdsException e)
