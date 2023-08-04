@@ -55,11 +55,18 @@ namespace GenerateForecast
 
         [JsonProperty("biddableKeywordsMatchType")]
         public string BiddableKeywordsMatchType { get; set; }
+        [JsonProperty("gaqlScript")]
+        public string GAQLScript { get; set; }
     }
 
     public class Result
     {
+        //public List<PlannableLocation> PlannableLocations { get; set; }
+        //public List<ProductMetadata> ProductMetadata { get; set; }
+        //public List<PlannedProductReachForecast> PlannedProductReachForecasts { get; set; }
         public KeywordForecastMetrics KeywordForecastMetrics { get; set; }
-        public Dictionary<long,string> Locations { get; set; }
+        public Dictionary<long, string> Locations { get; set; }
+        //public List<Google.Ads.GoogleAds.V14.Resources.UserInterest> UserInterests { get; set; }
+        // public List<Google.Ads.GoogleAds.V14.Resources.CampaignCriterion> CampaignCriteria { get; set; }
     }
 }

@@ -2,8 +2,8 @@
 using Google.Ads.GoogleAds.Config;
 using Google.Ads.GoogleAds.Lib;
 using Google.Ads.GoogleAds.Util;
-using Google.Ads.GoogleAds.V12.Enums;
-using Google.Ads.GoogleAds.V12.Resources;
+using Google.Ads.GoogleAds.V14.Enums;
+using Google.Ads.GoogleAds.V14.Resources;
 using Google.Ads.GoogleAds.V14.Common;
 using Google.Ads.GoogleAds.V14.Errors;
 using Google.Ads.GoogleAds.V14.Services;
@@ -58,8 +58,11 @@ namespace GenerateForecast
             }
 
             settings.CcId = args.Length > 2 ? args[2].Replace("-", "") : settings.CcId.Replace("-", "");
+            settings.BiddableKeywordsMatchType = args.Length > 3 ? args[3] : settings.BiddableKeywordsMatchType;
 
             (GoogleAdsClient client, UserCredential _) = Authorise(credentialsJson, settings);
+            var (exception, response) = GetUserInterest(client, settings);
+
             var (ok, body) = Forecast(client, settings);
             if (ok == null)
             {
@@ -68,9 +71,11 @@ namespace GenerateForecast
                 {
                     Locations = new Dictionary<long, string>()
                 };
-                foreach (var detail in CampaignDetails(client, settings).response)
+                var dets = CampaignDetails(client, settings).response;
+                // res.CampaignCriteria = dets;
+                foreach (var detail in dets)
                 {
-                    if (detail.HasNegative && !detail.Negative)
+                    if (detail.HasNegative && !detail.Negative && detail.CriterionCase == Google.Ads.GoogleAds.V14.Resources.CampaignCriterion.CriterionOneofCase.Location)
                     {
                         var resId = long.Parse(detail.ResourceName.Split('~')[1]);
                         var g = (from geo in geos where geo.Id == resId select geo).FirstOrDefault();
@@ -78,6 +83,11 @@ namespace GenerateForecast
                     }
                 }
                 res.KeywordForecastMetrics = body;
+
+                //var reachPlanService = Reach.GetReachPlanService(client);
+                //res.PlannableLocations = Reach.GetPlannableLocations(reachPlanService);
+                //res.ProductMetadata = Reach.GetPlannableProducts(reachPlanService, settings.Location.Split('/')[1]);
+                //res.PlannedProductReachForecasts = Reach.GetForecastMix(reachPlanService, settings.CcId, settings.Location.Split('/')[1], "AUD", DoubleToMicros(settings.BiddingStrategyDailyBudgetDollars));
                 Console.WriteLine(JsonConvert.SerializeObject(res, Formatting.Indented));
                 return 0;
             }
@@ -85,6 +95,44 @@ namespace GenerateForecast
             {
                 Console.WriteLine(JsonConvert.SerializeObject(ok.Failure, Formatting.Indented));
                 return 1;
+            }
+        }
+
+        private static (object exception, List<Google.Ads.GoogleAds.V14.Resources.UserInterest> response) GetUserInterest(GoogleAdsClient client, Settings settings)
+        {
+            // Get the GoogleAdsService.
+            Google.Ads.GoogleAds.V14.Services.GoogleAdsServiceClient googleAdsService = client.GetService(
+                Services.V14.GoogleAdsService);
+
+            // Create a query that will retrieve all campaigns.
+            var script = settings.GAQLScript;
+            if (!File.Exists(script))
+            {
+                return (new FileNotFoundException(script), null);
+            }
+            string query = File.ReadAllText(script);
+
+            try
+            {
+                var rows = new List<UserInterest>();
+
+                // Issue a search request.
+                googleAdsService.SearchStream(settings.CcId, query,
+                    (SearchGoogleAdsStreamResponse resp) =>
+                    {
+                        foreach (GoogleAdsRow googleAdsRow in resp.Results)
+                        {
+                            //Console.WriteLine("Campaign with ID {0} and name '{1}' was found.",
+                            //    googleAdsRow.Campaign.Id, googleAdsRow.Campaign.Name);
+                            rows.Add(googleAdsRow.UserInterest);
+                        }
+                    }
+                );
+                return (null, rows);
+            }
+            catch (GoogleAdsException e)
+            {
+                return (e.Failure, null);
             }
         }
 
@@ -122,6 +170,12 @@ namespace GenerateForecast
 
         private static (GoogleAdsFailure exception, List<Google.Ads.GoogleAds.V14.Resources.GeoTargetConstant> response) GetGeoTargetConstants(GoogleAdsClient client, Settings settings)
         {
+            const string targetsJson = ".\\geo_target_constants.json";
+            if (File.Exists(targetsJson))
+            {
+                var list = JsonConvert.DeserializeObject<List<Google.Ads.GoogleAds.V14.Resources.GeoTargetConstant>>(File.ReadAllText(targetsJson));
+                return (null, list);
+            }
             // Get the GoogleAdsService.
             GoogleAdsServiceClient googleAdsService = client.GetService(
                 Services.V14.GoogleAdsService);
@@ -156,6 +210,7 @@ WHERE
                         }
                     }
                 );
+                File.WriteAllText(targetsJson,JsonConvert.SerializeObject(rows));
                 return (null, rows);
             }
             catch (GoogleAdsException e)
